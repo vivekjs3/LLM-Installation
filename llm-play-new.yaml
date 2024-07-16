@@ -1,0 +1,158 @@
+---
+- hosts: all
+  become: true
+  remote_user: root
+  connection: ssh
+  gather_facts: no
+  vars_prompt:
+    - name: git_user
+      prompt: "Enter your Git username"
+      private: no
+    - name: git_pass
+      prompt: "Enter your Git password"
+      private: yes
+    - name: access_token
+      prompt: "Enter your Huggingface access token"
+      private: yes
+
+  tasks:
+  - name: Update apt package index
+    ansible.builtin.apt:
+      update_cache: yes
+
+  - name: Install required packages
+    ansible.builtin.apt:
+      name: 
+        - git
+        - curl
+        - build-essential
+        - libssl-dev
+        - zlib1g-dev
+        - libbz2-dev
+        - libreadline-dev
+        - libsqlite3-dev
+        - wget
+        - llvm
+        - libncurses5-dev
+        - libncursesw5-dev
+        - xz-utils
+        - tk-dev
+        - libffi-dev
+        - liblzma-dev
+        - python3-openssl
+      state: present
+
+  - name: Remove existing Pyenv directory if incomplete or corrupted
+    ansible.builtin.file:
+      path: /root/.pyenv
+      state: absent
+    ignore_errors: yes
+
+  - name: Install Pyenv (if not already installed)
+    ansible.builtin.shell: |
+      curl https://pyenv.run | bash
+    args:
+      executable: /bin/bash
+    ignore_errors: yes
+
+  - name: Update bash to use Pyenv
+    ansible.builtin.shell: |
+      echo 'export PYENV_ROOT="$HOME/.pyenv"' >> ~/.bashrc
+      echo 'export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.bashrc
+      echo -e 'if command -v pyenv 1>/dev/null 2>&1; then\n eval "$(pyenv init -)"\nfi' >> ~/.bashrc
+    args:
+      executable: /bin/bash
+
+  - name: Ensure pyenv is loaded in the current session
+    ansible.builtin.shell: |
+      export PYENV_ROOT="$HOME/.pyenv"
+      export PATH="$PYENV_ROOT/bin:$PATH"
+      eval "$(pyenv init --path)"
+      eval "$(pyenv init -)"
+    args:
+      executable: /bin/bash
+
+  - name: Install Python 3.11.7 using Pyenv
+    ansible.builtin.shell: |
+      export PYENV_ROOT="$HOME/.pyenv"
+      export PATH="$PYENV_ROOT/bin:$PATH"
+      eval "$(pyenv init --path)"
+      eval "$(pyenv init -)"
+      pyenv install 3.11.7
+      pyenv local 3.11.7
+    args:
+      executable: /bin/bash
+
+  - name: Create a directory and clone the repository
+    ansible.builtin.shell: |
+      mkdir -p ~/chatbot && cd ~/chatbot
+      git clone -b feature https://{{git_user|urlencode()}}:{{git_pass|urlencode()}}@github.com/PiltiSmart/PiltiSmartChatbot.git
+    args:
+      executable: /bin/bash
+
+  - name: Ensure the privateGPT directory exists
+    ansible.builtin.stat:
+      path: /root/chatbot/PiltiSmartChatbot/privateGPT
+    register: privateGPT_dir
+
+  - name: Fail if privateGPT directory does not exist
+    ansible.builtin.fail:
+      msg: "The directory /root/chatbot/PiltiSmartChatbot/privateGPT does not exist"
+    when: not privateGPT_dir.stat.exists
+
+  - name: Create and activate a Python environment
+    ansible.builtin.shell: |
+      export PYENV_ROOT="$HOME/.pyenv"
+      export PATH="$PYENV_ROOT/bin:$PATH"
+      eval "$(pyenv init --path)"
+      eval "$(pyenv init -)"
+      python3.11 -m venv chat
+      source chat/bin/activate
+    args:
+      chdir: /root/chatbot/PiltiSmartChatbot/privateGPT
+      executable: /bin/bash
+
+  - name: Install requirements
+    ansible.builtin.shell: |
+      export PYENV_ROOT="$HOME/.pyenv"
+      export PATH="$PYENV_ROOT/bin:$PATH"
+      eval "$(pyenv init --path)"
+      eval "$(pyenv init -)"
+      source chat/bin/activate
+      pip install --upgrade pip poetry
+      pip install build
+      poetry add build
+      poetry lock
+      poetry install --extras "ui llms-llama-cpp embeddings-huggingface vector-stores-qdrant"
+    args:
+      chdir: /root/chatbot/PiltiSmartChatbot/privateGPT
+      executable: /bin/bash
+
+  - name: Install Huggingface Model
+    ansible.builtin.shell: |
+      export PYENV_ROOT="$HOME/.pyenv"
+      export PATH="$PYENV_ROOT/bin:$PATH"
+      eval "$(pyenv init --path)"
+      eval "$(pyenv init -)"
+      source chat/bin/activate
+      huggingface-cli login --token "{{ access_token }}"
+      python scripts/setup
+    args:
+      chdir: /root/chatbot/PiltiSmartChatbot/privateGPT
+      executable: /bin/bash
+    async: 180
+    poll: 10
+
+  - name: Run the LLM
+    ansible.builtin.shell: |
+      export PYENV_ROOT="$HOME/.pyenv"
+      export PATH="$PYENV_ROOT/bin:$PATH"
+      eval "$(pyenv init --path)"
+      eval "$(pyenv init -)"
+      source chat/bin/activate
+      python -m private_gpt
+    args:
+      chdir: /root/chatbot/PiltiSmartChatbot/privateGPT
+      executable: /bin/bash
+    async: 0
+    poll: 0
